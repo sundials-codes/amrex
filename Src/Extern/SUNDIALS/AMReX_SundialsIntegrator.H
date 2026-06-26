@@ -15,7 +15,9 @@
 #include <nvector/nvector_manyvector.h>
 #include <sunnonlinsol/sunnonlinsol_fixedpoint.h>
 #include <sunlinsol/sunlinsol_spgmr.h>
+#include <arkode/arkode.h>
 #include <arkode/arkode_arkstep.h>
+#include <arkode/arkode_ls.h>
 #include <arkode/arkode_mristep.h>
 
 /**
@@ -150,6 +152,7 @@ private:
     // Nonlinear solver
     std::string nonlinear_solver = "Newton";
     int max_nonlinear_iters = 0;
+    amrex::Real nlscoef = amrex::Real(-1.0);
 
     std::string fast_nonlinear_solver = "Newton";
     int fast_max_nonlinear_iters = 0;
@@ -159,6 +162,9 @@ private:
     std::string linear_solver_preconditioning = "LEFT";
     int linear_solver_preconditioning_type = SUN_PREC_LEFT;
     int max_linear_iters = 0;
+    amrex::Real eps_lin = amrex::Real(-1.0);
+    int lsetup_frequency = 0;
+    long jac_eval_frequency = 0;
 
     std::string fast_linear_solver = "GMRES";
     std::string fast_linear_solver_preconditioning = "LEFT";
@@ -197,6 +203,9 @@ private:
 
     // Max steps between returns
     amrex::Long max_num_steps = 0;
+
+    bool abort_on_failure = true;
+    int last_sundials_flag = 0;
 
     static int PreconditioningType (const std::string& preconditioning, const char* parameter_name)
     {
@@ -274,6 +283,7 @@ private:
             }
         }
 
+        apply_slow_linear_control();
         slow_ls_needs_update = false;
     }
 
@@ -340,6 +350,7 @@ private:
 
         pp.query("nonlinear_solver", nonlinear_solver);
         pp.query("max_nonlinear_iters", max_nonlinear_iters);
+        pp.query("nlscoef", nlscoef);
 
         pp.query("fast_nonlinear_solver", fast_nonlinear_solver);
         pp.query("fast_max_nonlinear_iters", fast_max_nonlinear_iters);
@@ -349,6 +360,11 @@ private:
         linear_solver_preconditioning_type =
             PreconditioningType(linear_solver_preconditioning, "linear_solver_preconditioning");
         pp.query("max_linear_iters", max_linear_iters);
+        pp.query("eps_lin", eps_lin);
+        pp.query("epsLin", eps_lin);
+        pp.query("lsetup_frequency", lsetup_frequency);
+        pp.query("jac_eval_frequency", jac_eval_frequency);
+        pp.query("jacevalfrequency", jac_eval_frequency);
 
         pp.query("fast_linear_solver", fast_linear_solver);
         pp.query("fast_linear_solver_preconditioning", fast_linear_solver_preconditioning);
@@ -360,6 +376,75 @@ private:
         set_stop_time = pp.query("stop_time", stop_time);
 
         pp.query("max_num_steps", max_num_steps);
+        pp.query("abort_on_failure", abort_on_failure);
+    }
+
+    bool uses_slow_nonlinear_solver () const
+    {
+        return type == "DIRK" || type == "IMEX-RK" ||
+               type == "IM-MRI" || type == "IMEX-MRI";
+    }
+
+    void apply_slow_nonlinear_control ()
+    {
+        if (!uses_slow_nonlinear_solver() || arkode_mem == nullptr) {
+            return;
+        }
+
+        int flag = ARKodeSetMaxNonlinIters(arkode_mem, max_nonlinear_iters);
+        AMREX_ALWAYS_ASSERT(flag == 0);
+
+        flag = ARKodeSetNonlinConvCoef(arkode_mem, nlscoef);
+        AMREX_ALWAYS_ASSERT(flag == 0);
+
+        flag = ARKodeSetLSetupFrequency(arkode_mem, lsetup_frequency);
+        AMREX_ALWAYS_ASSERT(flag == 0);
+    }
+
+    void apply_slow_linear_control ()
+    {
+        if (!uses_slow_nonlinear_solver() || nonlinear_solver != "Newton" ||
+            arkode_mem == nullptr || LS == nullptr)
+        {
+            return;
+        }
+
+        int flag = ARKodeSetEpsLin(arkode_mem, eps_lin);
+        AMREX_ALWAYS_ASSERT(flag == 0);
+
+        flag = ARKodeSetJacEvalFrequency(arkode_mem, jac_eval_frequency);
+        AMREX_ALWAYS_ASSERT(flag == 0);
+    }
+
+    SundialsIntegratorStats collect_stats (void* mem) const
+    {
+        SundialsIntegratorStats stats;
+        if (mem == nullptr) {
+            return stats;
+        }
+
+        stats.valid = true;
+        stats.last_flag = last_sundials_flag;
+
+        (void)ARKodeGetNumSteps(mem, &stats.num_steps);
+        (void)ARKodeGetNumStepAttempts(mem, &stats.step_attempts);
+        (void)ARKodeGetNumRhsEvals(mem, 0, &stats.rhs_evals_0);
+        (void)ARKodeGetNumRhsEvals(mem, 1, &stats.rhs_evals_1);
+        (void)ARKodeGetNumLinSolvSetups(mem, &stats.num_lin_solv_setups);
+        (void)ARKodeGetNonlinSolvStats(mem,
+                                        &stats.num_nonlin_solv_iters,
+                                        &stats.num_nonlin_solv_conv_fails);
+        (void)ARKodeGetNumStepSolveFails(mem, &stats.num_step_solve_fails);
+        (void)ARKodeGetNumPrecEvals(mem, &stats.num_prec_evals);
+        (void)ARKodeGetNumPrecSolves(mem, &stats.num_prec_solves);
+        (void)ARKodeGetNumLinIters(mem, &stats.num_lin_iters);
+        (void)ARKodeGetNumLinConvFails(mem, &stats.num_lin_conv_fails);
+        (void)ARKodeGetNumLinRhsEvals(mem, &stats.num_lin_rhs_evals);
+        (void)ARKodeGetStepStats(mem, &stats.num_steps, &stats.hinused,
+                                 &stats.hlast, &stats.hcur, &stats.tcur);
+        (void)ARKodeGetCurrentGamma(mem, &stats.current_gamma);
+
+        return stats;
     }
 
     void SetupRK (amrex::Real time, N_Vector y_data)
@@ -424,8 +509,7 @@ private:
                 flag = ARKStepSetNonlinearSolver(arkode_mem, NLS);
                 AMREX_ALWAYS_ASSERT(flag == 0);
             }
-            flag = ARKStepSetMaxNonlinIters(arkode_mem, max_nonlinear_iters);
-            AMREX_ALWAYS_ASSERT(flag == 0);
+            apply_slow_nonlinear_control();
 
             if (nonlinear_solver == "Newton") {
                 if (amrex::Verbose()) {
@@ -589,8 +673,7 @@ private:
                 flag = MRIStepSetNonlinearSolver(arkode_mem, NLS);
                 AMREX_ALWAYS_ASSERT(flag == 0);
             }
-            flag = MRIStepSetMaxNonlinIters(arkode_mem, max_nonlinear_iters);
-            AMREX_ALWAYS_ASSERT(flag == 0);
+            apply_slow_nonlinear_control();
 
             if (nonlinear_solver == "Newton") {
                 if (amrex::Verbose()) {
@@ -1012,6 +1095,29 @@ public:
         SUNNonlinSolFree(fast_NLS);
     }
 
+    bool supports_sundials_controls () const override { return true; }
+
+    void set_sundials_nonlinear_control (SundialsNonlinearControl const& control) override
+    {
+        nlscoef = control.nlscoef;
+        max_nonlinear_iters = control.max_nonlinear_iters;
+        eps_lin = control.eps_lin;
+        lsetup_frequency = control.lsetup_frequency;
+        jac_eval_frequency = control.jac_eval_frequency;
+        apply_slow_nonlinear_control();
+        apply_slow_linear_control();
+    }
+
+    SundialsIntegratorStats get_sundials_stats () const override
+    {
+        return collect_stats(arkode_mem);
+    }
+
+    SundialsIntegratorStats get_sundials_fast_stats () const override
+    {
+        return collect_stats(arkode_fast_mem);
+    }
+
     void set_preconditioner (typename BaseT::PrecondSetupFunction Psetup,
                              typename BaseT::PrecondSolveFunction Psolve) override
     {
@@ -1053,13 +1159,19 @@ public:
             ARKStepReset(arkode_mem, time, y_old); // should probably resize
             ARKStepSetFixedStep(arkode_mem, dt);
             int flag = ARKStepEvolve(arkode_mem, tout, y_new, &tret, ARK_ONE_STEP);
-            AMREX_ALWAYS_ASSERT(flag >= 0);
+            last_sundials_flag = flag;
+            if (abort_on_failure) {
+                AMREX_ALWAYS_ASSERT(flag >= 0);
+            }
         }
         else if (use_mri) {
             MRIStepReset(arkode_mem, time, y_old); // should probably resize -- need to resize inner stepper
             MRIStepSetFixedStep(arkode_mem, dt);
             int flag = MRIStepEvolve(arkode_mem, tout, y_new, &tret, ARK_ONE_STEP);
-            AMREX_ALWAYS_ASSERT(flag >= 0);
+            last_sundials_flag = flag;
+            if (abort_on_failure) {
+                AMREX_ALWAYS_ASSERT(flag >= 0);
+            }
         } else {
             Error("SUNDIALS integrator type not specified.");
         }
@@ -1094,7 +1206,10 @@ public:
                 ARKStepSetFixedStep(arkode_mem, BaseT::time_step);
             }
             flag = ARKStepEvolve(arkode_mem, time_out, y_out, &time_ret, ARK_NORMAL);
-            AMREX_ALWAYS_ASSERT(flag >= 0);
+            last_sundials_flag = flag;
+            if (abort_on_failure) {
+                AMREX_ALWAYS_ASSERT(flag >= 0);
+            }
         }
         else if (use_mri) {
             if (!BaseT::use_adaptive_time_step) {
@@ -1104,7 +1219,10 @@ public:
                 ARKStepSetFixedStep(arkode_fast_mem, BaseT::fast_time_step);
             }
             flag = MRIStepEvolve(arkode_mem, time_out, y_out, &time_ret, ARK_NORMAL);
-            AMREX_ALWAYS_ASSERT(flag >= 0);
+            last_sundials_flag = flag;
+            if (abort_on_failure) {
+                AMREX_ALWAYS_ASSERT(flag >= 0);
+            }
         } else {
             Error("SUNDIALS integrator type not specified.");
         }

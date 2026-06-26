@@ -15,6 +15,39 @@
 
 namespace amrex {
 
+struct SundialsNonlinearControl
+{
+    amrex::Real nlscoef = amrex::Real(-1.0);
+    int max_nonlinear_iters = 0;
+    amrex::Real eps_lin = amrex::Real(-1.0);
+    int lsetup_frequency = 0;
+    long jac_eval_frequency = 0;
+};
+
+struct SundialsIntegratorStats
+{
+    bool valid = false;
+    int last_flag = 0;
+    long num_steps = 0;
+    long step_attempts = 0;
+    long rhs_evals_0 = 0;
+    long rhs_evals_1 = 0;
+    long num_lin_solv_setups = 0;
+    long num_nonlin_solv_iters = 0;
+    long num_nonlin_solv_conv_fails = 0;
+    long num_step_solve_fails = 0;
+    long num_prec_evals = 0;
+    long num_prec_solves = 0;
+    long num_lin_iters = 0;
+    long num_lin_conv_fails = 0;
+    long num_lin_rhs_evals = 0;
+    amrex::Real hinused = amrex::Real(0.0);
+    amrex::Real hlast = amrex::Real(0.0);
+    amrex::Real hcur = amrex::Real(0.0);
+    amrex::Real tcur = amrex::Real(0.0);
+    amrex::Real current_gamma = amrex::Real(0.0);
+};
+
 template<class T> struct IntegratorOps;
 
 #if defined(AMREX_PARTICLES)
@@ -440,6 +473,18 @@ public:
      * \brief Evolve the current (internal) integrator state to time_out
      */
     virtual void evolve (T& S_out, const amrex::Real time_out) = 0;
+
+    virtual bool supports_sundials_controls () const { return false; }
+
+    virtual void set_sundials_nonlinear_control (SundialsNonlinearControl const& control)
+    {
+        (void)control;
+        amrex::Error("SUNDIALS nonlinear controls are only available with the SUNDIALS integrator.");
+    }
+
+    virtual SundialsIntegratorStats get_sundials_stats () const { return {}; }
+
+    virtual SundialsIntegratorStats get_sundials_fast_stats () const { return {}; }
 
     virtual void time_interpolate (const T& S_new, const T& S_old,
                                    amrex::Real timestep_fraction, T& data) = 0;

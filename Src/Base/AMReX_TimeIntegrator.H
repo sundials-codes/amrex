@@ -233,6 +233,26 @@ public:
         integrator_ptr->evolve(S_out, time_out);
     }
 
+    bool supports_sundials_controls () const
+    {
+        return integrator_ptr->supports_sundials_controls();
+    }
+
+    void set_sundials_nonlinear_control (SundialsNonlinearControl const& control)
+    {
+        integrator_ptr->set_sundials_nonlinear_control(control);
+    }
+
+    SundialsIntegratorStats get_sundials_stats () const
+    {
+        return integrator_ptr->get_sundials_stats();
+    }
+
+    SundialsIntegratorStats get_sundials_fast_stats () const
+    {
+        return integrator_ptr->get_sundials_fast_stats();
+    }
+
     void integrate (T& S_old, T& S_new, amrex::Real start_time, const amrex::Real start_timestep,
                     const amrex::Real end_time, const int start_step, const int max_steps)
     {
