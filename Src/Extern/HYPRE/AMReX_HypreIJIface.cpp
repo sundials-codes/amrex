@@ -5,6 +5,8 @@
 
 namespace amrex {
 
+unsigned int HypreIJIface::s_global_write_counter = 0;
+
 namespace {
 
 /** Helper object to parse HYPRE inputs and call API functions
@@ -118,10 +120,12 @@ void HypreIJIface::solve (
     HYPRE_IJVectorGetObject(m_sln, (void**)&m_parSln);
 
     if (m_write_files) {
+        const unsigned int write_counter = m_use_global_matrix_file_counter ?
+            s_global_write_counter : m_write_counter;
         const std::string matfile = amrex::Concatenate(
-            m_file_prefix + "_A", static_cast<int>(m_write_counter)) + ".out";
+            m_file_prefix + "_A", static_cast<int>(write_counter)) + ".out";
         const std::string rhsfile = amrex::Concatenate(
-            m_file_prefix + "_b", static_cast<int>(m_write_counter)) + ".out";
+            m_file_prefix + "_b", static_cast<int>(write_counter)) + ".out";
         HYPRE_IJMatrixPrint(m_mat, matfile.c_str());
         HYPRE_IJVectorPrint(m_rhs, rhsfile.c_str());
     }
@@ -143,12 +147,18 @@ void HypreIJIface::solve (
     m_solverFinalResidualNormPtr(m_solver, &m_final_res_norm);
 
     if (m_write_files) {
+        const unsigned int write_counter = m_use_global_matrix_file_counter ?
+            s_global_write_counter : m_write_counter;
         const std::string slnfile = amrex::Concatenate(
-            m_file_prefix + "_x", static_cast<int>(m_write_counter)) + ".out";
+            m_file_prefix + "_x", static_cast<int>(write_counter)) + ".out";
         HYPRE_IJVectorPrint(m_sln, slnfile.c_str());
 
         // Increment counter if the user has requested output of multiple solves
-        if (!m_overwrite_files) { ++m_write_counter; }
+        if (m_use_global_matrix_file_counter) {
+            ++s_global_write_counter;
+        } else if (!m_overwrite_files) {
+            ++m_write_counter;
+        }
     }
 
     if (m_verbose > 1) {
@@ -168,6 +178,8 @@ void HypreIJIface::parse_inputs (const std::string& prefix)
     pp.queryAdd("recompute_preconditioner", m_recompute_preconditioner);
     pp.queryAdd("write_matrix_files", m_write_files);
     pp.queryAdd("overwrite_existing_matrix_files", m_overwrite_files);
+    pp.queryAdd("file_prefix", m_file_prefix);
+    pp.queryAdd("global_matrix_file_counter", m_use_global_matrix_file_counter);
     pp.queryAdd("adjust_singular_matrix", m_adjust_singular_matrix);
 
     if (m_verbose > 2) {

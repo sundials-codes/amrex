@@ -147,6 +147,7 @@ private:
     std::string m_solver_name{"BoomerAMG"};
     std::string m_preconditioner_name{"none"};
     std::string m_file_prefix{"IJ"};
+    static unsigned int s_global_write_counter;
 
     //! Verbosity of the HYPRE solvers
     int m_verbose{0};
@@ -170,6 +171,9 @@ private:
 
     //! Flag indicating whether the files are overwritten on subsequent writes
     bool m_overwrite_files{true};
+
+    //! Use a process-wide matrix-file counter across HYPRE interface instances
+    bool m_use_global_matrix_file_counter{false};
 };
 
 } // namespace amrex
