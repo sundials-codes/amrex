@@ -233,6 +233,16 @@ public:
         integrator_ptr->evolve(S_out, time_out);
     }
 
+    amrex::Real evolve_one_step (T& S_out, const amrex::Real time_limit)
+    {
+        return integrator_ptr->evolve_one_step(S_out, time_limit);
+    }
+
+    void reinitialize (T& S_data, amrex::Real time)
+    {
+        integrator_ptr->reinitialize(S_data, time);
+    }
+
     bool supports_sundials_controls () const
     {
         return integrator_ptr->supports_sundials_controls();

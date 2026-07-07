@@ -474,6 +474,18 @@ public:
      */
     virtual void evolve (T& S_out, const amrex::Real time_out) = 0;
 
+    /**
+     * \brief Evolve the current internal integrator by one accepted step,
+     * without resetting adaptive history, stopping no later than time_limit.
+     */
+    virtual amrex::Real evolve_one_step (T& /* S_out */, const amrex::Real /* time_limit */)
+    {
+        amrex::Error("evolve_one_step is only available with the SUNDIALS integrator.");
+        return amrex::Real(0.0);
+    }
+
+    virtual void reinitialize (T& /* S_data */, amrex::Real /* time */) {}
+
     virtual bool supports_sundials_controls () const { return false; }
 
     virtual void set_sundials_nonlinear_control (SundialsNonlinearControl const& control)

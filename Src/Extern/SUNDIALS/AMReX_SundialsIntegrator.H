@@ -1097,6 +1097,43 @@ public:
 
     bool supports_sundials_controls () const override { return true; }
 
+    void reinitialize (T& S_data, amrex::Real time) override
+    {
+        int flag = 0;
+        N_Vector y_data = wrap_data(S_data);
+
+        if (use_ark) {
+            if (type == "ERK") {
+                flag = ARKStepReInit(arkode_mem, SundialsUserFun::f, nullptr, time, y_data);
+            } else if (type == "DIRK") {
+                flag = ARKStepReInit(arkode_mem, nullptr, SundialsUserFun::f, time, y_data);
+            } else if (type == "IMEX-RK") {
+                flag = ARKStepReInit(arkode_mem, SundialsUserFun::fe, SundialsUserFun::fi,
+                                     time, y_data);
+            } else {
+                Error("SUNDIALS ARK integrator type not specified.");
+            }
+            AMREX_ALWAYS_ASSERT(flag == 0);
+            slow_ls_needs_update = true;
+        } else if (use_mri) {
+            if (type == "EX-MRI") {
+                flag = MRIStepReInit(arkode_mem, SundialsUserFun::f, nullptr, time, y_data);
+            } else if (type == "IM-MRI") {
+                flag = MRIStepReInit(arkode_mem, nullptr, SundialsUserFun::f, time, y_data);
+            } else if (type == "IMEX-MRI") {
+                flag = MRIStepReInit(arkode_mem, SundialsUserFun::fe, SundialsUserFun::fi,
+                                     time, y_data);
+            } else {
+                Error("SUNDIALS MRI integrator type not specified.");
+            }
+            AMREX_ALWAYS_ASSERT(flag == 0);
+            slow_ls_needs_update = true;
+            fast_ls_needs_update = true;
+        }
+
+        N_VDestroy(y_data);
+    }
+
     void set_sundials_nonlinear_control (SundialsNonlinearControl const& control) override
     {
         nlscoef = control.nlscoef;
@@ -1228,6 +1265,59 @@ public:
         }
 
         N_VDestroy(y_out);
+    }
+
+    /**
+     * \brief Evolve by one accepted ARKODE internal step without resetting
+     * adaptive history, stopping no later than \p time_limit.
+     */
+    amrex::Real evolve_one_step (T& S_out, const amrex::Real time_limit) override
+    {
+        int flag = 0;
+        amrex::Real time_ret = time_limit;
+
+        N_Vector y_out = wrap_data(S_out);
+        if (use_ark) {
+            ConfigureSlowLinearSolver(y_out);
+        } else if (use_mri) {
+            ConfigureFastLinearSolver(y_out);
+            ConfigureSlowLinearSolver(y_out);
+        }
+
+        if (use_ark) {
+            if (!BaseT::use_adaptive_time_step) {
+                ARKStepSetFixedStep(arkode_mem, BaseT::time_step);
+            }
+            flag = ARKStepSetStopTime(arkode_mem, time_limit);
+            if (flag >= 0) {
+                flag = ARKStepEvolve(arkode_mem, time_limit, y_out, &time_ret, ARK_ONE_STEP);
+            }
+            last_sundials_flag = flag;
+            if (abort_on_failure) {
+                AMREX_ALWAYS_ASSERT(flag >= 0);
+            }
+        }
+        else if (use_mri) {
+            if (!BaseT::use_adaptive_time_step) {
+                MRIStepSetFixedStep(arkode_mem, BaseT::time_step);
+            }
+            if (!BaseT::use_adaptive_fast_time_step) {
+                ARKStepSetFixedStep(arkode_fast_mem, BaseT::fast_time_step);
+            }
+            flag = MRIStepSetStopTime(arkode_mem, time_limit);
+            if (flag >= 0) {
+                flag = MRIStepEvolve(arkode_mem, time_limit, y_out, &time_ret, ARK_ONE_STEP);
+            }
+            last_sundials_flag = flag;
+            if (abort_on_failure) {
+                AMREX_ALWAYS_ASSERT(flag >= 0);
+            }
+        } else {
+            Error("SUNDIALS integrator type not specified.");
+        }
+
+        N_VDestroy(y_out);
+        return time_ret;
     }
 
     /**
