@@ -27,6 +27,19 @@ public:
     using HypreIntType = HYPRE_Int;
     using HypreRealType = HYPRE_Real;
 
+    struct Telemetry {
+        long setup_calls = 0;
+        long solve_calls = 0;
+        amrex::Real setup_wall_seconds = amrex::Real(0.0);
+        amrex::Real solve_wall_seconds = amrex::Real(0.0);
+        amrex::Real last_setup_wall_seconds = amrex::Real(0.0);
+        amrex::Real last_solve_wall_seconds = amrex::Real(0.0);
+        amrex::Real last_cum_nnz_ap = amrex::Real(-1.0);
+        int last_hierarchy_levels = 0;
+        amrex::Long last_finest_rows = 0;
+        amrex::Long last_coarsest_rows = 0;
+    };
+
     /**
      * \brief Construct an IJ interface spanning rows [\p ilower, \p iupper].
      *
@@ -78,6 +91,10 @@ public:
 
     [[nodiscard]] bool adjustSingularMatrix() const { return m_adjust_singular_matrix; }
 
+    [[nodiscard]] static Telemetry getGlobalTelemetry () { return s_global_telemetry; }
+
+    static void resetGlobalTelemetry () { s_global_telemetry = Telemetry{}; }
+
 private:
     void init_preconditioner(const std::string& prefix, const std::string& name);
     void init_solver(const std::string& prefix, const std::string& name);
@@ -85,6 +102,7 @@ private:
     //! run_setup
     void run_hypre_setup();
     void run_hypre_solve();
+    void record_boomeramg_setup_stats(amrex::Real setup_seconds);
 
     // Preconditioners
     void boomeramg_precond_configure(const std::string& prefix);
@@ -163,6 +181,9 @@ private:
     //! Flag indicating whether user has requested recomputation of preconditioner
     bool m_recompute_preconditioner{true};
 
+    //! Gather optional BoomerAMG hierarchy statistics during setup.
+    bool m_collect_boomeramg_stats{false};
+
     //! Should singular matrix be adjusted to fix solution on a node/cell?
     bool m_adjust_singular_matrix{false};
 
@@ -174,6 +195,8 @@ private:
 
     //! Use a process-wide matrix-file counter across HYPRE interface instances
     bool m_use_global_matrix_file_counter{false};
+
+    static Telemetry s_global_telemetry;
 };
 
 } // namespace amrex

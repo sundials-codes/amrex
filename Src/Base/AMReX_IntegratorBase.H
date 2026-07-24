@@ -22,6 +22,8 @@ struct SundialsNonlinearControl
     amrex::Real eps_lin = amrex::Real(-1.0);
     int lsetup_frequency = 0;
     long jac_eval_frequency = 0;
+    bool force_lsetup = false;
+    bool force_jac_eval = false;
 };
 
 struct SundialsIntegratorStats
@@ -215,7 +217,8 @@ protected:
     using PrecondSetupFunction = std::function<void(T& state, T& rhs,
                                                     const amrex::Real time,
                                                     bool jok, bool& jcur,
-                                                    const amrex::Real gamma)>;
+                                                    const amrex::Real gamma,
+                                                    const amrex::Real step_size)>;
 
     using PrecondSolveFunction = std::function<void(T& soln, T& rhs,
                                                     T& state, T& state_rhs,

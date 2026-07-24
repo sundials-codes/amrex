@@ -930,7 +930,12 @@ public:
             unpack_vector(y_rhs, S_rhs);
 
             bool jcur = false;
-            BaseT::PrecondSetup(S_data, S_rhs, rhs_time, jok, jcur, gamma);
+            sunrealtype current_step = 0.0;
+            if (arkode_mem != nullptr) {
+                (void)ARKodeGetCurrentStep(arkode_mem, &current_step);
+            }
+            BaseT::PrecondSetup(S_data, S_rhs, rhs_time, jok, jcur, gamma,
+                                static_cast<amrex::Real>(current_step));
             *jcurPtr = jcur ? SUNTRUE : SUNFALSE;
 
             return 0;
@@ -971,7 +976,12 @@ public:
             unpack_vector(y_rhs, S_rhs);
 
             bool jcur = false;
-            BaseT::FastPrecondSetup(S_data, S_rhs, rhs_time, jok, jcur, gamma);
+            sunrealtype current_step = 0.0;
+            if (arkode_fast_mem != nullptr) {
+                (void)ARKodeGetCurrentStep(arkode_fast_mem, &current_step);
+            }
+            BaseT::FastPrecondSetup(S_data, S_rhs, rhs_time, jok, jcur, gamma,
+                                    static_cast<amrex::Real>(current_step));
             *jcurPtr = jcur ? SUNTRUE : SUNFALSE;
 
             return 0;
@@ -1143,6 +1153,16 @@ public:
         jac_eval_frequency = control.jac_eval_frequency;
         apply_slow_nonlinear_control();
         apply_slow_linear_control();
+        if (uses_slow_nonlinear_solver() && arkode_mem != nullptr) {
+            if (control.force_lsetup || control.force_jac_eval) {
+                const int flag = ARKodeForceLSetup(arkode_mem);
+                AMREX_ALWAYS_ASSERT(flag == 0);
+            }
+            if (control.force_jac_eval && nonlinear_solver == "Newton" && LS != nullptr) {
+                const int flag = ARKodeForceJacEval(arkode_mem);
+                AMREX_ALWAYS_ASSERT(flag == 0);
+            }
+        }
     }
 
     SundialsIntegratorStats get_sundials_stats () const override

@@ -148,7 +148,8 @@ public:
     }
 
     void set_preconditioner (
-        std::function<void(T&, T&, const amrex::Real, bool, bool&, const amrex::Real)> Psetup,
+        std::function<void(T&, T&, const amrex::Real, bool, bool&, const amrex::Real,
+                           const amrex::Real)> Psetup,
         std::function<void(T&, T&, T&, T&, const amrex::Real, const amrex::Real,
                            const amrex::Real, int)> Psolve)
     {
@@ -156,7 +157,8 @@ public:
     }
 
     void set_fast_preconditioner (
-        std::function<void(T&, T&, const amrex::Real, bool, bool&, const amrex::Real)> Psetup,
+        std::function<void(T&, T&, const amrex::Real, bool, bool&, const amrex::Real,
+                           const amrex::Real)> Psetup,
         std::function<void(T&, T&, T&, T&, const amrex::Real, const amrex::Real,
                            const amrex::Real, int)> Psolve)
     {

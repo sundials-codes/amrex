@@ -1,11 +1,16 @@
 #include <AMReX_HypreIJIface.H>
 #include <AMReX.H>
+#include <AMReX_ParallelDescriptor.H>
 #include <AMReX_ParmParse.H>
 #include <AMReX_PlotFileUtil.H>
+
+#include <algorithm>
+#include <vector>
 
 namespace amrex {
 
 unsigned int HypreIJIface::s_global_write_counter = 0;
+HypreIJIface::Telemetry HypreIJIface::s_global_telemetry = {};
 
 namespace {
 
@@ -94,12 +99,19 @@ void HypreIJIface::run_hypre_setup ()
 {
     if (m_need_setup || m_recompute_preconditioner) {
         BL_PROFILE("HypreIJIface::run_hypre_setup()");
+        auto setup_seconds = static_cast<Real>(amrex::second());
         if (m_has_preconditioner) {
             m_solverPrecondPtr(
                 m_solver, m_precondSolvePtr, m_precondSetupPtr, m_precond);
         }
 
         m_solverSetupPtr(m_solver, m_parA, m_parRhs, m_parSln);
+        setup_seconds = static_cast<Real>(amrex::second()) - setup_seconds;
+        ParallelDescriptor::ReduceRealMax(setup_seconds);
+        s_global_telemetry.setup_calls += 1;
+        s_global_telemetry.setup_wall_seconds += setup_seconds;
+        s_global_telemetry.last_setup_wall_seconds = setup_seconds;
+        record_boomeramg_setup_stats(setup_seconds);
         m_need_setup = false;
     }
 }
@@ -107,7 +119,56 @@ void HypreIJIface::run_hypre_setup ()
 void HypreIJIface::run_hypre_solve ()
 {
     BL_PROFILE("HypreIJIface::run_hypre_solve()");
+    auto solve_seconds = static_cast<Real>(amrex::second());
     m_solverSolvePtr(m_solver, m_parA, m_parRhs, m_parSln);
+    solve_seconds = static_cast<Real>(amrex::second()) - solve_seconds;
+    ParallelDescriptor::ReduceRealMax(solve_seconds);
+    s_global_telemetry.solve_calls += 1;
+    s_global_telemetry.solve_wall_seconds += solve_seconds;
+    s_global_telemetry.last_solve_wall_seconds = solve_seconds;
+}
+
+void HypreIJIface::record_boomeramg_setup_stats (Real /*setup_seconds*/)
+{
+    if (!m_collect_boomeramg_stats || m_solver_name != "BoomerAMG" || m_solver == nullptr) {
+        return;
+    }
+
+    HYPRE_Real cum_nnz_ap = HYPRE_Real(-1.0);
+    HYPRE_BoomerAMGGetCumNnzAP(m_solver, &cum_nnz_ap);
+    auto cum_nnz_ap_real = static_cast<Real>(cum_nnz_ap);
+    ParallelDescriptor::ReduceRealMax(cum_nnz_ap_real);
+    s_global_telemetry.last_cum_nnz_ap = cum_nnz_ap_real;
+
+    const auto local_rows = static_cast<Long>(
+        (m_iupper >= m_ilower) ? (m_iupper - m_ilower + 1) : 0);
+    Long global_rows = local_rows;
+    ParallelDescriptor::ReduceLongSum(global_rows);
+    s_global_telemetry.last_finest_rows = global_rows;
+
+    int local_max_level = -1;
+    Long local_coarsest_rows = 0;
+    if (local_rows > 0) {
+        std::vector<HYPRE_Int> cgrid(static_cast<std::size_t>(local_rows), HYPRE_Int(0));
+        HYPRE_BoomerAMGGetGridHierarchy(m_solver, cgrid.data());
+        for (const auto level : cgrid) {
+            local_max_level = std::max(local_max_level, static_cast<int>(level));
+        }
+        int global_max_level = local_max_level;
+        ParallelDescriptor::ReduceIntMax(global_max_level);
+        for (const auto level : cgrid) {
+            if (static_cast<int>(level) == global_max_level) {
+                local_coarsest_rows += 1;
+            }
+        }
+        s_global_telemetry.last_hierarchy_levels = global_max_level + 1;
+    } else {
+        ParallelDescriptor::ReduceIntMax(local_max_level);
+        s_global_telemetry.last_hierarchy_levels = local_max_level + 1;
+    }
+
+    ParallelDescriptor::ReduceLongSum(local_coarsest_rows);
+    s_global_telemetry.last_coarsest_rows = local_coarsest_rows;
 }
 
 void HypreIJIface::solve (
@@ -176,6 +237,7 @@ void HypreIJIface::parse_inputs (const std::string& prefix)
     pp.queryAdd("hypre_solver", m_solver_name);
     pp.queryAdd("hypre_preconditioner", m_preconditioner_name);
     pp.queryAdd("recompute_preconditioner", m_recompute_preconditioner);
+    pp.queryAdd("bamg_collect_stats", m_collect_boomeramg_stats);
     pp.queryAdd("write_matrix_files", m_write_files);
     pp.queryAdd("overwrite_existing_matrix_files", m_overwrite_files);
     pp.queryAdd("file_prefix", m_file_prefix);
@@ -279,6 +341,7 @@ void HypreIJIface::boomeramg_precond_configure (const std::string& prefix)
     hpp("bamg_strong_threshold", HYPRE_BoomerAMGSetStrongThreshold,
         (AMREX_SPACEDIM == 3) ? 0.57 : 0.25);
     hpp("bamg_interp_type", HYPRE_BoomerAMGSetInterpType, 0);
+    hpp.set<HypreRealType>("bamg_max_row_sum", HYPRE_BoomerAMGSetMaxRowSum);
 
     hpp.set<int>("bamg_variant", HYPRE_BoomerAMGSetVariant);
     hpp.set<int>("bamg_keep_transpose", HYPRE_BoomerAMGSetKeepTranspose);
@@ -289,6 +352,8 @@ void HypreIJIface::boomeramg_precond_configure (const std::string& prefix)
     hpp.set<int>("bamg_agg_interp_type", HYPRE_BoomerAMGSetAggInterpType);
     hpp.set<int>("bamg_agg_pmax_elmts", HYPRE_BoomerAMGSetAggPMaxElmts);
     hpp("bamg_trunc_factor", HYPRE_BoomerAMGSetTruncFactor, 0.1);
+    hpp.set<HypreRealType>("bamg_agg_trunc_factor", HYPRE_BoomerAMGSetAggTruncFactor);
+    hpp.set<HypreRealType>("bamg_relax_wt", HYPRE_BoomerAMGSetRelaxWt);
     hpp("bamg_set_restriction", HYPRE_BoomerAMGSetRestriction, 0);
 
     if (hpp.pp.contains("bamg_non_galerkin_tol")) {
@@ -445,6 +510,15 @@ void HypreIJIface::boomeramg_solver_configure (const std::string& prefix)
 
     // Parse options
     HypreOptParse hpp(prefix, m_solver);
+    bool use_old_default = true;
+    hpp.pp.queryAdd("bamg_use_old_default", use_old_default);
+    if (use_old_default) {
+        HYPRE_BoomerAMGSetOldDefault(m_solver);
+    }
+    if (m_collect_boomeramg_stats) {
+        HYPRE_BoomerAMGSetCumNnzAP(m_solver, HYPRE_Real(1.0));
+    }
+
     hpp.set<int>("verbose", HYPRE_BoomerAMGSetPrintLevel);
     hpp.set<int>("logging", HYPRE_BoomerAMGSetLogging);
     hpp("bamg_relax_order", HYPRE_BoomerAMGSetRelaxOrder, 1);
@@ -470,12 +544,16 @@ void HypreIJIface::boomeramg_solver_configure (const std::string& prefix)
     hpp.set<int>("bamg_coarsen_type", HYPRE_BoomerAMGSetCoarsenType);
     hpp.set<int>("bamg_cycle_type", HYPRE_BoomerAMGSetCycleType);
     hpp.set<int>("bamg_max_levels", HYPRE_BoomerAMGSetMaxLevels);
-
-    bool use_old_default = true;
-    hpp.pp.queryAdd("bamg_use_old_default", use_old_default);
-    if (use_old_default) {
-        HYPRE_BoomerAMGSetOldDefault(m_solver);
-    }
+    hpp.set<int>("bamg_interp_type", HYPRE_BoomerAMGSetInterpType);
+    hpp.set<HypreRealType>("bamg_max_row_sum", HYPRE_BoomerAMGSetMaxRowSum);
+    hpp.set<int>("bamg_max_coarse_size", HYPRE_BoomerAMGSetMaxCoarseSize);
+    hpp.set<int>("bamg_pmax_elmts", HYPRE_BoomerAMGSetPMaxElmts);
+    hpp.set<int>("bamg_agg_num_levels", HYPRE_BoomerAMGSetAggNumLevels);
+    hpp.set<int>("bamg_agg_interp_type", HYPRE_BoomerAMGSetAggInterpType);
+    hpp.set<int>("bamg_agg_pmax_elmts", HYPRE_BoomerAMGSetAggPMaxElmts);
+    hpp.set<HypreRealType>("bamg_trunc_factor", HYPRE_BoomerAMGSetTruncFactor);
+    hpp.set<HypreRealType>("bamg_agg_trunc_factor", HYPRE_BoomerAMGSetAggTruncFactor);
+    hpp.set<HypreRealType>("bamg_relax_wt", HYPRE_BoomerAMGSetRelaxWt);
 }
 
 void HypreIJIface::gmres_solver_configure (const std::string& prefix)
